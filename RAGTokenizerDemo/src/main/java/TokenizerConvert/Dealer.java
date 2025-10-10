@@ -345,14 +345,16 @@ public class Dealer {
                 ));
             }
         }
-
-        return new Query.Builder().bool(boolBuilder.build()).build();
+        // 添加权重
+        boolBuilder.boost(0.05f);
+       return Query.of(q -> q.bool(boolBuilder.build()));
     }
 
     public SearchResult search(Map<String, Object> req, String indexName, boolean highlight) throws Exception {
 
         String question = req.get("question") != null ? req.get("question").toString() : "";
-        int pg = req.get("page") != null ? ((Number) req.get("page")).intValue() : 1;
+//        int pg = req.get("page") != null ? ((Number) req.get("page")).intValue() : 1;
+        int pg = req.get("page") != null ? ((Number) req.get("page")).intValue() : 0;
         int ps = req.get("size") != null ? ((Number) req.get("size")).intValue() : 10;
         int topK = req.get("topk") != null ? ((Number) req.get("topk")).intValue() : 10;
         double similarity = req.get("similarity") != null ? ((Number) req.get("similarity")).doubleValue() : 0.8;
@@ -375,7 +377,7 @@ public class Dealer {
         // 2. 添加过滤器；设置每一个查询字段的权重
         bqry = addFilters(bqry, req);
         // 给 filters 加上 boost
-        if (bqry.isBool()) {
+/*        if (bqry.isBool()) {
             final BoolQuery boolQuery = bqry.bool();
             bqry = Query.of(q -> q
                     .constantScore(cs -> cs
@@ -384,7 +386,7 @@ public class Dealer {
 
                     )
             );
-        }
+        }*/
 
         // 3.设置高亮配置
         Highlight.Builder highlightBuilder = new Highlight.Builder();

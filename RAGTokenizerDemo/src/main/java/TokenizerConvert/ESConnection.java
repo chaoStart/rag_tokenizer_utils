@@ -5,6 +5,7 @@ import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch.core.InfoResponse;
 import co.elastic.clients.elasticsearch.core.search.SourceFilter;
 import co.elastic.clients.elasticsearch.core.search.TrackHits;
+import co.elastic.clients.json.JsonData;
 import co.elastic.clients.transport.ElasticsearchTransport;
 import co.elastic.clients.transport.rest_client.RestClientTransport;
 import co.elastic.clients.json.jackson.JacksonJsonpMapper;
@@ -15,23 +16,23 @@ import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.elasticsearch.client.RestClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import co.elastic.clients.elasticsearch._types.ElasticsearchException;
 import co.elastic.clients.elasticsearch.core.SearchRequest;
 import co.elastic.clients.elasticsearch.core.SearchResponse;
 import co.elastic.clients.elasticsearch.core.search.Hit;
-import co.elastic.clients.elasticsearch._types.Time;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import org.apache.http.client.CredentialsProvider;
 import org.elasticsearch.client.RestClientBuilder;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import co.elastic.clients.elasticsearch._types.Time;
-
+import com.fasterxml.jackson.databind.ObjectMapper;
+import co.elastic.clients.elasticsearch._types.*;
+import co.elastic.clients.elasticsearch._types.query_dsl.*;
+import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.stream.Collectors;
 
 public class ESConnection {
     private static final Logger logger = LoggerFactory.getLogger(ESConnection.class);
@@ -155,26 +156,15 @@ public class ESConnection {
                 : idxnms.split(",");
         // 打印输出q查询语句包含的信息；
         System.out.println("**这里是组合了各种参数的查询条件**\n"+q);
-        Exception lastException = null;
+ /*       Exception lastException = null;
         for (int i = 0; i < 3; i++) {
             try {
-//                SearchRequest request = new SearchRequest.Builder()
-//                        .index(Arrays.asList(indices))
-//                        .timeout(String.valueOf(Time.of(t -> t.time(timeout))))
-//                        .trackTotalHits(TrackHits.of(th -> th.enabled(true)))
-//                        .source(s -> s.filter(f -> f.includes(src)))
-//                        .build();
-//                // 注意：这里 q 还要转成 Query 并加进 request，这里先留空
-//                SearchResponse<Map> res = es.search(request, Map.class);
-                // Python dict 转成 Java Map qMap
-//                Query query = QueryBuilderUtil.fromMap(q);
-                // 1. 提取 query 部分
                 Map<String, Object> queryMap = (Map<String, Object>) q.get("query");
                 Query query = QueryConverter.parseQuery(queryMap);
-                // 2.构建 SearchRequest
+                // 构建 SearchRequest
                 SearchRequest.Builder builder = new SearchRequest.Builder()
                         .index(Arrays.asList("ragflow_sciyonff8bcdc11efbdcf88aedd524325"))
-                        .timeout("30s")
+                        .timeout("300s")
                         .trackTotalHits(th -> th.enabled(true))
                         .source(s -> s.filter(f -> f.includes(src)))
                         .query(query);
@@ -199,8 +189,198 @@ public class ESConnection {
 
         logger.error("ES search timeout for 3 times!");
         throw lastException != null ? lastException : new Exception("ES search timeout.");
+    }*/
+        Exception lastException = null;
+        ObjectMapper mapper = new ObjectMapper();
+
+        for (int i = 0; i < 3; i++) {
+            try {
+                // 1. 解析 from 和 size
+                Integer from = q.containsKey("from") ? ((Number) q.get("from")).intValue() : 0;
+                Integer size = q.containsKey("size") ? ((Number) q.get("size")).intValue() : 10;
+
+                // 2. 构建主 query
+                Query mainQuery = buildQueryFromMap((Map<String, Object>) q.get("query"));
+
+                // 3. 构建 KNN 查询（如果存在）
+                KnnQuery knnQuery = null;
+                if (q.containsKey("knn")) {
+                    Map<String, Object> knnMap = (Map<String, Object>) q.get("knn");
+                    List<Float> vector = (List<Float>) knnMap.get("query_vector");
+                    String field = (String) knnMap.get("field");
+                    int k = ((Number) knnMap.get("k")).intValue();
+                    int numCandidates = ((Number) knnMap.get("num_candidates")).intValue();
+                    float similarity = ((Number) knnMap.get("similarity")).floatValue();
+
+                    // 构建 KNN filter
+                    Query knnFilter;
+                    if (knnMap.containsKey("filter")) {
+                        knnFilter = buildQueryFromMap((Map<String, Object>) knnMap.get("filter"));
+                    } else {
+                        knnFilter = null;
+                    }
+
+                    knnQuery = KnnQuery.of(kb -> kb
+                            .field(field)
+                            .k(k)
+                            .numCandidates(numCandidates)
+                            .similarity(similarity)
+                            .queryVector(vector)
+                            .filter(knnFilter)
+                    );
+                }
+
+                // 4. 构建 SearchRequest
+                SearchRequest.Builder builder = new SearchRequest.Builder()
+                        .index(Arrays.asList(indices))
+                        .from(from)
+                        .size(size)
+                        .timeout("30s")
+                        .trackTotalHits(th -> th.enabled(true))
+                        .source(s -> s.filter(f -> f.includes(src)))
+                        .query(mainQuery);
+
+                // 5. 添加 KNN 查询（ES 8.11 支持 top-level knn）
+                if (knnQuery != null) {
+                    builder.knn(knnQuery);
+                }
+
+                // 6. 执行查询
+                SearchResponse<Map> res = es.search(builder.build(), Map.class);
+
+                if (Boolean.TRUE.equals(res.timedOut())) {
+                    throw new Exception("Es Timeout.");
+                }
+                return res;
+
+            } catch (Exception e) {
+                lastException = e;
+                logger.error("ES search exception: {} 【Q】: {}", e.getMessage(), q, e);
+                if (e.getMessage() != null && e.getMessage().contains("Timeout")) {
+                    continue;
+                }
+                throw e;
+            }
+        }
+
+        logger.error("ES search timeout for 3 times!");
+        throw lastException != null ? lastException : new Exception("ES search timeout.");
     }
 
 
+    // 递归构建 Query 对象
+    private Query buildQueryFromMap(Map<String, Object> queryMap) {
+        if (queryMap == null || queryMap.isEmpty()) {
+            return new Query.Builder().matchAll(m -> m).build();
+        }
+
+        String kind = (String) queryMap.get("_kind");
+        Map<String, Object> value = (Map<String, Object>) queryMap.get("_value");
+
+        if ("Bool".equals(kind)) {
+            BoolQuery.Builder boolBuilder = new BoolQuery.Builder();
+
+            // must
+            if (value.containsKey("must")) {
+                List<Map<String, Object>> mustList = (List<Map<String, Object>>) value.get("must");
+                for (Map<String, Object> sub : mustList) {
+                    boolBuilder.must(buildQueryFromMap(sub));
+                }
+            }
+
+            // filter
+            if (value.containsKey("filter")) {
+                List<Map<String, Object>> filterList = (List<Map<String, Object>>) value.get("filter");
+                for (Map<String, Object> sub : filterList) {
+                    boolBuilder.filter(buildQueryFromMap(sub));
+                }
+            }
+
+            // must_not
+            if (value.containsKey("mustNot")) {
+                List<Map<String, Object>> mustNotList = (List<Map<String, Object>>) value.get("mustNot");
+                for (Map<String, Object> sub : mustNotList) {
+                    boolBuilder.mustNot(buildQueryFromMap(sub));
+                }
+            }
+
+            // should
+            if (value.containsKey("should")) {
+                List<Map<String, Object>> shouldList = (List<Map<String, Object>>) value.get("should");
+                for (Map<String, Object> sub : shouldList) {
+                    boolBuilder.should(buildQueryFromMap(sub));
+                }
+            }
+
+            // boost
+            if (value.containsKey("boost")) {
+                float boost = ((Number) value.get("boost")).floatValue();
+                boolBuilder.boost(boost);
+            }
+
+            return new Query.Builder().bool(boolBuilder.build()).build();
+        }
+
+        else if ("QueryString".equals(kind)) {
+            Map<String, Object> v = value;
+            List<String> fields = (List<String>) v.get("fields");
+            String queryStr = (String) v.get("query");
+            String typeStr = (String) v.get("type");
+            String minimumShouldMatch = (String) v.get("minimumShouldMatch");
+            float boost = ((Number) v.get("boost")).floatValue();
+
+            QueryStringQuery.Builder qsBuilder = new QueryStringQuery.Builder()
+                    .query(queryStr)
+                    .fields(fields)
+                    .minimumShouldMatch(minimumShouldMatch)
+                    .boost(boost);
+
+            if ("BestFields".equalsIgnoreCase(typeStr)) {
+                qsBuilder.type(TextQueryType.BestFields);
+            } else if ("MostFields".equalsIgnoreCase(typeStr)) {
+                qsBuilder.type(TextQueryType.MostFields);
+            } // 可扩展其他类型
+
+            return new Query.Builder().queryString(qsBuilder.build()).build();
+        }
+
+        else if ("Terms".equals(kind)) {
+            String field = (String) value.get("field");
+            List<Map<String, Object>> termsList = (List<Map<String, Object>>) ((Map<String, Object>) value.get("terms")).get("_value");
+            List<FieldValue> termValues = termsList.stream()
+                    .map(termMap -> {
+                        Object val = termMap.get("_value");
+                        // 支持字符串或数字（根据实际数据类型）
+                        if (val instanceof String) {
+                            return FieldValue.of((String) val);
+                        } else if (val instanceof Number) {
+                            return FieldValue.of(String.valueOf((Number) val));
+                        } else {
+                            return FieldValue.of(val.toString()); // fallback
+                        }
+                    })
+                    .collect(Collectors.toList());
+            return new Query.Builder()
+                    .terms(t -> t.field(field).terms(tu -> tu.value(termValues)))
+                    .build();
+        }
+
+        else if ("Range".equals(kind)) {
+            String field = (String) value.get("field");
+            RangeQuery.Builder rangeBuilder = new RangeQuery.Builder().field(field);
+
+            if (value.containsKey("lt")) {
+                Number lt = (Number) ((Map<String, Object>) value.get("lt")).get("value");
+                rangeBuilder.lt(JsonData.of(lt));
+            }
+            // 可扩展 gt, gte, lte 等
+
+            return new Query.Builder().range(rangeBuilder.build()).build();
+        }
+
+        else {
+            throw new IllegalArgumentException("Unsupported query kind: " + kind);
+        }
+    }
 }
 

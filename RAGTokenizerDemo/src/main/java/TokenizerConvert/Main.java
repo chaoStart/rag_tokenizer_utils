@@ -27,15 +27,15 @@ public class Main {
         Dealer  init_search_module = new Dealer(es);
 
         //3. 定义测试字符串
-        String question = "2.2模型提供商配置\n添加嵌入模型（固定配置，切勿随意修改）";
+        String question = "引言\n偶像一\n\n1.首先是张婧仪";
         Object embdMdl = new Object();
-        List<String> kbIds= Arrays.asList("675726981343838242");
+        List<String> kbIds= Arrays.asList("571776832787972098");
         int page = 1;
         int size = 10;
         double similarityThreshold = 0.2;
         double vectorSimilarityWeight = 0.3;
         int top = 10;
-        List<String> docIds= Arrays.asList("675726981343838250");
+        List<String> docIds= Arrays.asList("673484243964461057");
         boolean aggs =false ;
         Object rerankMdl = new Object();
         boolean highlight = false;
